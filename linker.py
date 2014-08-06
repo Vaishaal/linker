@@ -86,18 +86,22 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
 
     print 'Pruning edges that belong to interior buildings.'
     x = time.time()
-    prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius)
+#    prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
+    print 'Pruning extra building-intersection edges.'
+    x = time.time()
+    prune_building_intersection(edges, building_centroids, intersections_utm)
+    y = time.time()
+    print "%0.1f seconds\n" % (y - x)
+
+    ### OUTPUT ###
+    for key in edges:
+        edges[key] = list(edges[key])
+    output_db(edges, building_centroids, intersections_utm, rrecords, irecords)
 
 """
-    # Find service roads.
-    service_set = set()
-    for road_attrs in rrecords:
-        if road_attrs[CLASS] == 'service':
-            service_set.add(road_attrs[ROAD_ID])
-
     # Create a set of registered intersections.
     intersection_set = set()
     # Find the intersections that have T intersections.
@@ -192,23 +196,6 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
                 break
             else:
                 last_len = len(candidate_segments)
-
-    # Create edges.
-    edges = defaultdict(list)
-    left_merge = defaultdict(list) # If one of the ends of a segment isn't an intersection, it needs to get stithced to another segment.
-    right_merge = defaultdict(list) # We don't need any additional data structures here because ...
-    for segment in segment_to_buildings:
-        buildings = segment_to_buildings[segment]
-        buildings.sort(key=lambda x: x[1])
-        prune_interior_buildings(buildings, segment, buildings_utm)
-        # First handle all the buildlings in the middle of the segment.
-        for i in range(1, len(buildings)-1):
-            c = buildings[i] # c for current
-            p = buildings[i-1] # p for previous
-            n = buildings[i+1] # n for next
-            edges[str(buildings[i][0])].append(buildings[i-1][0])
-            edges[str(buildings[i][0])].append(buildings[i+1][0])
-
 """
 
 ###################
@@ -242,15 +229,22 @@ def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_
             point = building_centroids[index]
             nearby_segment_indices = segment_kdtree.query_ball_point(point, segment_search_radius)
             nearby_segments = set(map(lambda i: kd_to_segment[i], nearby_segment_indices))
-            for corner in buildings_utm[index]:
-                for segment in nearby_segments:
+            keep = False
+            for segment in nearby_segments:
+                for corner in buildings_utm[index]:
                     seg_start = segment[0]
                     seg_vector = (np.matrix(segment[1]) - seg_start).T
                     perp_vector = (ROT90*seg_vector)/np.linalg.norm(seg_vector)
-                    solution = np.linalg.pinv(np.concatenate([seg_vector, -perp_vector], axis=1))*((np.matrix(point) - np.matrix(seg_start)).T)
+                    solution = np.linalg.pinv(np.concatenate([seg_vector, -perp_vector], axis=1))*((np.matrix(corner) - np.matrix(seg_start)).T)
                     # abs(solution[1]) is the distance from building to segment
-                    if abs(solution[1]) > PIPE_WIDTH:
-                        to_remove.add(index)
+                    if abs(solution[1]) <= PIPE_WIDTH:
+                        keep = True
+                        break
+                if keep: #TODO: Python has no labeled continues. Maybe a cleaner way to do this?
+                    break
+            if keep:
+                continue
+            to_remove.add(index)
     for index in to_remove:
         edges.pop(index, None)
     for u in edges:
@@ -259,11 +253,37 @@ def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_
             if not v in to_remove:
                 remaining.add(v)
         edges[u] = remaining
-    pass
+    # TODO: This is the best function in which to assign buildings to roads.
 
-def prune_building_intersection(edges):
+def prune_building_intersection(edges, building_centroids, intersections_utm):
     # Only buildings that are on the corners of blocks can have edges to intersections.
-    pass
+    for index in edges:
+        if index >= len(building_centroids): # If it's an intersection.
+            int_point = intersections_utm[index - len(building_centroids)]
+            checked = set()
+            keep = set()
+            for n in edges[index]: # n for neighbor
+                if n >= len(building_centroids):
+                    continue
+                elif not n in checked: # DFS to find connected buildings.
+                    fringe = [n]
+                    cc = set() # Connected component.
+                    while fringe:
+                        a = fringe.pop()
+                        cc.add(a)
+                        for b in edges[a]:
+                            if b < len(building_centroids) and not b in cc:
+                                fringe.append(b)
+                    dist_list = []
+                    for m in edges[index]:
+                        if m in cc:
+                            dist_list.append((m, np.linalg.norm(np.array(int_point) - np.array(building_centroids[m]))))
+                    dist_list.sort(key=lambda x: x[1])
+                    keep.add(dist_list[0][0])
+                    for tmp in dist_list:
+                        checked.add(tmp[0])
+            for k in keep:
+                edges[k].remove(index)
 
 def prune_building_building(edges):
     # A building can only have edges to up to two buildings.
@@ -329,33 +349,11 @@ def compute_centroid(polygon):
 def get_angle(u, v):
     return abs(float(np.arccos((u/np.linalg.norm(u)).dot(v/np.linalg.norm(v)))))
 
-def prune_interior_buildings(buildings, segment, building_db):
-    # If a building is somehow caught, but is behind another building we get rid of it.
-    # To do this we see if two buildings that are adjacent to each other have footprints
-    # that overlap in the projection down to the segment.
-    # The building whose centroid is closer to the road wins and the other the removed.
-    to_remove = set()
-    for i in range(len(buildings) - 1):
-        poly_a = building_db[buildings[i][0]]
-        poly_b = building_db[buildings[i+1][0]]
-        # We find the rightmost point in poly_a and the leftmost in poly_b, along the direction of the segment.
-        base = np.array(segment[0])
-        segment_vector = np.array(segment[1]) - base
-        rightmost = max(map(lambda x: (np.array(x) - base).dot(segment_vector), poly_a))
-        leftmost = min(map(lambda x: (np.array(x) - base).dot(segment_vector), poly_b))
-        if leftmost < rightmost and abs(buildings[i][2] - buildings[i+1][2]) > OVERLAP_THRESHOLD:
-            if buildings[i][2] < buildings[i+1][2]:
-                to_remove.add(buildings[i+1])
-            elif buildings[i][2] > buildings[i+1][2]:
-                to_remove.add(buildings[i])
-    for item in to_remove:
-        buildings.remove(item)
-
 ##########
 # Output #
 ##########
 
-def output_db(edges, building_centroids, intersections_utm, rrecords):
+def output_db(edges, building_centroids, intersections_utm, rrecords, irecords):
     output_edges = json.dumps(edges)
     fe = open('db.edges.json', 'w+')
     fe.write(output_edges)
@@ -372,7 +370,7 @@ def output_db(edges, building_centroids, intersections_utm, rrecords):
                 'x': centroid[0],\
                 'y': centroid[1]})
     for i, intersection in enumerate(intersections_utm):
-        node_data.append({'key': intersection_base + i,\
+        node_data.append({'key': len(building_centroids) + i,\
                 'attr': {'length': -1,\
                     'height': -1,\
                     'angle': 0,\
