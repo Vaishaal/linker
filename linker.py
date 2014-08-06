@@ -84,20 +84,22 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
     print "%0.1f seconds\n" % (y - x)
 
     print 'Pruning edges that belong to interior buildings.'
+    building_to_segments = {}
     x = time.time()
-#    prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius)
+    prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius, building_to_segments)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
+    print building_to_segments
 
     print 'Pruning extra building-intersection edges.'
     x = time.time()
-    prune_building_intersection(edges, building_centroids, intersections_utm)
+#    prune_building_intersection(edges, building_centroids, intersections_utm)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
     print 'Pruning extra building-building edges.'
     x = time.time()
-    prune_building_building(edges, building_centroids)
+#    prune_building_building(edges, building_centroids)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
@@ -106,85 +108,6 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
         edges[key] = list(edges[key])
     output_db(edges, building_centroids, intersections_utm, rrecords, irecords)
 
-"""
-    # Go through road DB to find the bottom tip of each T intersection (one on a different line from the other two.
-    tee_tips = {}
-    for road in roads_utm:
-        if tuple(road[0]) in tees:
-            tee_tips[tuple(road[0])] = road[1]
-        if tuple(road[-1]) in tees:
-            tee_tips[tuple(road[-1])] = road[-2]
-
-    # Breaks roads down into segments. Fills in dictionary for T intersections to the adjacent road nodes.
-    # Makes map from segment to OSM id.
-    road_to_segments = defaultdict(list)
-    segment_to_osm = {}
-    for road_index, road in enumerate(roads_utm):
-        for i in range(len(road) - 1):
-            road_to_segments[road_index].append((tuple(road[i]), tuple(road[i+1])))
-            road_to_segments[road_index].append((tuple(road[i+1]), tuple(road[i])))
-            segment_to_osm[(tuple(road[i]), tuple(road[i+1]))] = rrecords[road_index][ROAD_ID]
-            segment_to_osm[(tuple(road[i+1]), tuple(road[i]))] = rrecords[road_index][ROAD_ID]
-
-    # Creates a map from OSM road id to a list of OSM roads that intersect it.
-    road_to_intersecting_roads = defaultdict(set)
-    for intersection_attrs in irecords:
-        road_str = intersection_attrs[INTERSECTING_ROADS]
-        intersecting_roads = road_str.split(',')
-        for r1 in intersecting_roads:
-            r1 = int(r1)
-            for r2 in intersecting_roads:
-                r2 = int(r2)
-                if r1 != r2 and r1 != -1 and r2 != -1:
-                    road_to_intersecting_roads[r1].add(r2)
-
-    # Maps a road segment and a whole road to a list of nearby buildings.
-    segment_to_buildings = defaultdict(list)
-    road_to_buildings = defaultdict(list)
-    rot90 = np.matrix([[0, -1], [1, 0]])
-    for i, building in enumerate(building_centroids.T):
-        if i % 100 == 0:
-            print i
-        candidate_segments = []
-        for road_index in road_to_segments:
-            segments = road_to_segments[road_index]
-            for segment in segments:
-                segment_vector = np.matrix(segment[1]) - np.matrix(segment[0])
-                segment_length = np.linalg.norm(segment_vector)
-                segment_vector = segment_vector/segment_length
-                perp_vector = segment_vector*rot90
-                # Solve for the intersection of the segment line and the perpendicular passing through the buildling.
-                solution = np.linalg.pinv(np.concatenate([segment_vector, -perp_vector]).T)*((np.matrix(building) - np.matrix(segment[0])).T)
-                # solution[1] is the distance from building to segment
-                if solution[0] > 0 and solution[0] < segment_length and solution[1] > 0 and solution[1] < PIPE_WIDTH:
-                    candidate_segments.append((segment, float(solution[1]), float(solution[0])))
-        if len(candidate_segments) == 0:
-            continue
-        candidate_segments.sort(key=lambda x: x[1])
-        accepted_segments = [candidate_segments[0][0]]
-        last_accepted = candidate_segments[0][0]
-        road_to_buildings[segment_to_osm[last_accepted]].append(i)
-        # Store the building index and distance ALONG segment as well as distance FROM segment.
-        segment_to_buildings[last_accepted].append((i, candidate_segments[0][2], candidate_segments[0][1])) 
-        # Add all segments that meet the crtieria.
-        candidate_segments = candidate_segments[1:]
-        last_len = len(candidate_segments)
-        while True:
-            for seg in candidate_segments:
-                last_osm = segment_to_osm[last_accepted]
-                next_osm = segment_to_osm[seg[0]]
-                if next_osm in road_to_intersecting_roads[last_osm]:
-                    last_accepted = seg[0]
-                    road_to_buildings[segment_to_osm[last_accepted]].append(i)
-                    accepted_segments.append(last_accepted)
-                    segment_to_buildings[last_accepted].append((i, seg[2], seg[1]))
-                    candidate_segments.remove(seg)
-                    break
-            if len(candidate_segments) == last_len:
-                break
-            else:
-                last_len = len(candidate_segments)
-"""
 
 ###################
 # Pruning Modules #
@@ -209,7 +132,7 @@ def prune_cross_roads(edges, buildings_intersections, segment_kdtree, kd_to_segm
         edges[u] = remaining
     pass
 
-def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius):
+def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius, building_to_segments):
     # Buildings whose closest corner to road distance is more than PIPE_WIDTH should not have any edges.
     to_remove = set()
     for index in edges:
@@ -218,11 +141,14 @@ def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_
             nearby_segment_indices = segment_kdtree.query_ball_point(point, segment_search_radius)
             nearby_segments = set(map(lambda i: kd_to_segment[i], nearby_segment_indices))
             keep = False
+            seg_distances = []
             for segment in nearby_segments:
+                seg_start = segment[0]
+                seg_vector = (np.matrix(segment[1]) - seg_start).T
+                perp_vector = (ROT90*seg_vector)/np.linalg.norm(seg_vector)
+                solution = np.linalg.pinv(np.concatenate([seg_vector, -perp_vector], axis=1))*((np.matrix(point) - np.matrix(seg_start)).T)
+                seg_distances.append((segment, float(abs(solution[1]))))
                 for corner in buildings_utm[index]:
-                    seg_start = segment[0]
-                    seg_vector = (np.matrix(segment[1]) - seg_start).T
-                    perp_vector = (ROT90*seg_vector)/np.linalg.norm(seg_vector)
                     solution = np.linalg.pinv(np.concatenate([seg_vector, -perp_vector], axis=1))*((np.matrix(corner) - np.matrix(seg_start)).T)
                     # abs(solution[1]) is the distance from building to segment
                     if abs(solution[1]) <= PIPE_WIDTH:
@@ -230,6 +156,7 @@ def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_
                         break
                 if keep: #TODO: Python has no labeled continues. Maybe a cleaner way to do this?
                     break
+            building_to_segments[index] = seg_distances
             if keep:
                 continue
             to_remove.add(index)
@@ -241,7 +168,6 @@ def prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_
             if not v in to_remove:
                 remaining.add(v)
         edges[u] = remaining
-    # TODO: This is the best function in which to assign buildings to roads.
 
 def prune_building_intersection(edges, building_centroids, intersections_utm):
     # Only buildings that are on the corners of blocks can have edges to intersections.
