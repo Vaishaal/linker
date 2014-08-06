@@ -60,7 +60,6 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
     # Generate a KDTree of buildings and intersections for preliminary edges.
     buildings_intersections = np.concatenate((building_centroids, np.array(intersections_utm)))
     point_tree = KDTree(buildings_intersections)
-    intersection_base = len(buildings_utm)
 
     # Preliminary edges.
     edges = defaultdict(set)
@@ -96,29 +95,18 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
+    print 'Pruning extra building-building edges.'
+    x = time.time()
+    prune_building_building(edges, building_centroids)
+    y = time.time()
+    print "%0.1f seconds\n" % (y - x)
+
     ### OUTPUT ###
     for key in edges:
         edges[key] = list(edges[key])
     output_db(edges, building_centroids, intersections_utm, rrecords, irecords)
 
 """
-    # Create a set of registered intersections.
-    intersection_set = set()
-    # Find the intersections that have T intersections.
-    tees = set()
-    intersection_id = {} # Intersection IDs start after building IDs.
-    for i, intersection in enumerate(intersections_utm):
-        intersection_id[tuple(intersection)] = intersection_base + i
-        roads = irecords[i][INTERSECTING_ROADS].split(',')
-        degree = irecords[i][DEGREE]
-        for road in roads:
-            if int(road) in service_set:
-                degree -= 1
-        if degree > 2:
-            intersection_set.add(tuple(intersection))
-        if irecords[i][DEGREE] == 3:
-            tees.add(tuple(intersection))
-
     # Go through road DB to find the bottom tip of each T intersection (one on a different line from the other two.
     tee_tips = {}
     for road in roads_utm:
@@ -285,10 +273,23 @@ def prune_building_intersection(edges, building_centroids, intersections_utm):
             for k in keep:
                 edges[k].remove(index)
 
-def prune_building_building(edges):
+def prune_building_building(edges, building_centroids):
     # A building can only have edges to up to two buildings.
-    # Pick the closest two buildings. Must run AFTER prune_interior.
-    pass
+    # Pick the closest two buildings. Must run AFTER prune_interior and prune_cross_roads.
+    for key in edges:
+        if key < len(building_centroids):
+            a = building_centroids[key]
+            dist_list = []
+            for b in edges[key]:
+                if b < len(building_centroids):
+                    dist_list.append((b, np.linalg.norm(a - building_centroids[b])))
+            dist_list.sort(key=lambda x: x[1])
+            keep = set()
+            if len(dist_list) > 0:
+                keep.add(dist_list[0][0])
+            if len(dist_list) > 1:
+                keep.add(dist_list[1][0])
+            edges[key] = keep
 
 ####################
 # Helper Functions #
