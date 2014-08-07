@@ -39,6 +39,10 @@ CLASS_MAP = {'service': 0,
         'primary_link': 9}
 
 def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = True):
+    ###############
+    # PRE-PROCESS #
+    ###############
+
     # Read in the shapefiles.
     build_sf = shapefile.Reader(building_sf_path) # Polygons.
     int_sf = shapefile.Reader(intersection_sf_path) # Points.
@@ -67,19 +71,15 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
         edges[pair[0]].add(pair[1])
         edges[pair[1]].add(pair[0])
 
-    ###############
-    # PRE-PROCESS #
-    ###############
-
     # Compute radius to search for road points.
-    (segment_kdtree, kd_to_segment, segment_search_radius, service_set) = make_segment_kd(roads_utm, rrecords)
+    (segment_kdtree, kd_to_segment, segment_search_radius, service_set, segment_to_osm) = process_segments(roads_utm, rrecords)
 
     #########
     # Prune #
     #########
     print 'Pruning edges that cross roads.'
     x = time.time()
-#    prune_cross_roads(edges, buildings_intersections, segment_kdtree, kd_to_segment, segment_search_radius, service_set, ignore_service)
+    prune_cross_roads(edges, buildings_intersections, segment_kdtree, kd_to_segment, segment_search_radius, service_set, ignore_service)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
@@ -89,19 +89,35 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
     prune_interior(edges, building_centroids, buildings_utm, segment_kdtree, kd_to_segment, segment_search_radius, building_to_segments)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
-    print building_to_segments
 
     print 'Pruning extra building-intersection edges.'
     x = time.time()
-#    prune_building_intersection(edges, building_centroids, intersections_utm)
+    prune_building_intersection(edges, building_centroids, intersections_utm)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
 
     print 'Pruning extra building-building edges.'
     x = time.time()
-#    prune_building_building(edges, building_centroids)
+    prune_building_building(edges, building_centroids)
     y = time.time()
     print "%0.1f seconds\n" % (y - x)
+
+    ### Add Road Nodes ###
+    for key in building_to_segments:
+        building_to_segments[key].sort(key=lambda x: x[1])
+        intersection_road_ids = set()
+        for n in edges[key]:
+            if n >= len(building_centroids):
+                intersection_road_ids.update(filter(lambda x: x != -1,\
+                        map(int, irecords[n - len(building_centroids)][INTERSECTING_ROADS].split(','))))
+        if intersection_road_ids:
+            for seg in building_to_segments[key]:
+                # Allow all roads inside the pipe width
+                osm_id = segment_to_osm[seg[0]]
+                if osm_id in intersection_road_ids:
+                    edges[osm_id].add(key)
+        elif len(building_to_segments[key]) > 0:
+            osm_id = segment_to_osm[building_to_segments[key][0][0]] # Just add closest segment.
 
     ### OUTPUT ###
     for key in edges:
@@ -228,13 +244,14 @@ def utm_to_lonlat(point):
     output = utm.to_latlon(point[0], point[1], 37, 'S')
     return [output[1], output[0]]
 
-def make_segment_kd(roads_utm, rrecords):
+def process_segments(roads_utm, rrecords):
     # Find the longest road segment.
     max_segment_length = -float('inf')
     num_segments = reduce(lambda x,y: x + y, map(lambda road: len(road) - 1, roads_utm))
     segment_kd_points = np.zeros([5*num_segments, 2])
     kd_to_segment = []
     service_set = set()
+    segment_to_osm = {}
     counter = 0
     for road_ind, road in enumerate(roads_utm):
         if rrecords[road_ind][CLASS] == 'service':
@@ -245,6 +262,7 @@ def make_segment_kd(roads_utm, rrecords):
             start = np.array(road[i])
             end = np.array(road[i+1])
             segment = (tuple(road[i]), tuple(road[i+1]))
+            segment_to_osm[segment] = rrecords[road_ind][ROAD_ID]
             segment_vector = end - start
             segment_length = np.linalg.norm(segment_vector)
             max_segment_length = segment_length if segment_length > max_segment_length else max_segment_length
@@ -256,7 +274,7 @@ def make_segment_kd(roads_utm, rrecords):
                 counter += 1
     # Return KD tree of segments, list to map from KDTree indices to segments and the maximum distance
     # a point can be from any end or midpoint of a segment + 0.1 as floating point tolerance.
-    return (KDTree(segment_kd_points), kd_to_segment, sqrt((max_segment_length/8)**2 + PRELIM_DIST**2) + 0.1, service_set)
+    return (KDTree(segment_kd_points), kd_to_segment, sqrt((max_segment_length/8)**2 + PRELIM_DIST**2) + 0.1, service_set, segment_to_osm)
 
 def compute_centroid(polygon):
     # Implements the formula on the wikipedia page.
