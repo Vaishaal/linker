@@ -14,7 +14,8 @@ PIPE_WIDTH = 20 # Max width of the pipe in meters.
 ANGLE_TOLERANCE = pi/8 # Angle of tolerance that we can call straight for determining T intersections.
 DEGREE = 1 # Field of the intersections record that contains degree.
 OVERLAP_THRESHOLD = 5 # Number of meters the centroids of two buildings have to be apart to count as non-overlapping.
-ROT90 = np.matrix([[0, -1], [1, 0]]) #Counter-clockwise 90 degree rotation matrix.
+ROT90 = np.matrix([[0, -1], [1, 0]]) # Counter-clockwise 90 degree rotation matrix.
+NORTH = np.array([0, 1]) # North pointing unit vector.
 
 # Matcher node types.
 BUILDING = 0
@@ -122,7 +123,7 @@ def link(building_sf_path, intersection_sf_path, road_sf_path, ignore_service = 
     ### OUTPUT ###
     for key in edges:
         edges[key] = list(edges[key])
-    output_db(edges, building_centroids, intersections_utm, rrecords, irecords)
+    output_db(edges, building_centroids, intersections_utm, roads_utm, rrecords, irecords)
 
 
 ###################
@@ -298,7 +299,7 @@ def get_angle(u, v):
 # Output #
 ##########
 
-def output_db(edges, building_centroids, intersections_utm, rrecords, irecords):
+def output_db(edges, building_centroids, intersections_utm, roads_utm, rrecords, irecords):
     output_edges = json.dumps(edges)
     fe = open('db.edges.json', 'w+')
     fe.write(output_edges)
@@ -308,7 +309,8 @@ def output_db(edges, building_centroids, intersections_utm, rrecords, irecords):
         node_data.append({'key': i,\
                 'attr': {'length': -1,\
                     'height': -1,\
-                    'angle': 0,\
+                    'anglel': -1,\
+                    'angleh': -1,\
                     'roadClass': -1,\
                     'degree': -1,\
                     'nodeType': BUILDING},\
@@ -318,17 +320,25 @@ def output_db(edges, building_centroids, intersections_utm, rrecords, irecords):
         node_data.append({'key': len(building_centroids) + i,\
                 'attr': {'length': -1,\
                     'height': -1,\
-                    'angle': 0,\
+                    'anglel': -1,\
+                    'angleh': -1,\
                     'roadClass': -1,\
                     'degree': irecords[i][DEGREE],\
                     'nodeType': INTERSECTION},\
                 'x': intersection[0],\
                 'y': intersection[1]})
-    for road_attrs in rrecords:
+    for i, road_attrs in enumerate(rrecords):
+        road = roads_utm[i]
+        angles = []
+        for j in range(len(road) - 1):
+            seg_vector = np.array(road[j+1]) - np.array(road[j])
+            seg_vector = seg_vector/np.linalg.norm(seg_vector)
+            angles.append(np.arcsin(np.linalg.norm(np.cross(NORTH, seg_vector))))
         node_data.append({'key': road_attrs[ROAD_ID],\
                 'attr': {'length': -1,\
                     'height': -1,\
-                    'angle': 0,\
+                    'anglel': min(angles),\
+                    'angleh': max(angles),\
                     'roadClass': CLASS_MAP[road_attrs[CLASS]],\
                     'degree': -1,\
                     'nodeType': ROAD},\
