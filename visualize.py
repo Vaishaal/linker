@@ -35,10 +35,9 @@ def visualize(name,nodes, edges, utm_zone, latlon):
                 seen_edges.add(tuple(set(line)))
                 edges_shp.record(count)
                 edges_shp.poly(shapeType=shapefile.POLYLINE, parts=[line])
-    print name
-    nodes_shp.save('nodes')
+    nodes_shp.save('/home/vaishaal/Dropbox/nodes')
     if (edges):
-        edges_shp.save('edges')
+        edges_shp.save('/home/vaishaal/Dropbox/edges')
 
 
 if __name__ == "__main__":
