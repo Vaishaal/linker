@@ -18,6 +18,9 @@ pipes.field('ID', 'N', '10')
 
 road_lines =  shapefile.Writer(shapefile.POLYLINE)
 road_lines.field('ID', 'N', '10')
+b = 0
+i = 2**20
+r = 2**30
 class Linker(object):
     def __init__(self, buildings_path, intersections_path, roads_path):
         build_sf = shapefile.Reader(buildings_path) # Polygons.
@@ -46,6 +49,7 @@ class Linker(object):
         self.nodes = self.build_nodes()
         self.node_map = {n["key"]:n for n in self.nodes}
         self.edges = defaultdict(list)
+        self.edge_weights = defaultdict(list)
         self.int_map = dict([i[::-1] for i in enumerate(self.intersections)])
 
     def build_nodes(self):
@@ -76,7 +80,22 @@ class Linker(object):
             node["key"] = "i{0}".format(i)
             assert(node["key"] not in keys)
             keys.add(node["key"])
+            attrs["degree"] = self.irecords[i][1]
             attrs["nodeType"] = INTERSECTION
+            fill_attr(attrs)
+            node["attr"] = attrs
+            nodes.append(node)
+        for i,r in enumerate(self.roads):
+            node = {}
+            attrs = {}
+            cx,cy = -1,-1
+            node["x"] = cx
+            node["y"] = cy
+            node["key"] = "r{0}".format(self.rrecords[i][0])
+            assert(node["key"] not in keys)
+            keys.add(node["key"])
+            attrs["nodeType"] = ROAD
+            attrs["roadType"] = self.irecords[i][1]
             fill_attr(attrs)
             node["attr"] = attrs
             nodes.append(node)
@@ -149,16 +168,19 @@ class Linker(object):
         ''' Given a particular segment (a pair of points),
             calculate the optimum linking pipe width.
         '''
-        return 20
-    def add_edge(self, key1, key2):
+        return 15
+    def add_edge(self, key1, key2, reverse=True, weight=1):
         self.edges[key1].append(key2)
-        self.edges[key2].append(key1)
+        self.edge_weights[key1].append(weight)
+        if (reverse):
+            self.edges[key2].append(key1)
+            self.edge_weights[key2].append(weight)
 
     def link(self):
         for osm_id,road in self.segment_map.items():
             segment_link_map = {}
             for segment in road:
-                segment_links = self.link_segment(segment)
+                segment_links = self.link_segment(segment,osm_id)
                 segment_link_map[segment] = segment_links
             for (segment1,segment2) in zip(road[:-1],road[1:]):
                 assert(segment1[1] == segment2[0])
@@ -175,6 +197,8 @@ class Linker(object):
                     self.add_edge(b2_id,i_id)
                     self.add_edge(b1r_id,i_id)
                     self.add_edge(b2r_id,i_id)
+                    self.add_edge(b1_id,b2_id, weight=0.5)
+                    self.add_edge(b1r_id,b2r_id, weight=0.5)
                 else:
                     self.add_edge(b1_id,b2_id)
                     self.add_edge(b1r_id,b2r_id)
@@ -197,12 +221,8 @@ class Linker(object):
                 self.add_edge(b2_id,i_id)
                 self.add_edge(b2r_id,i_id)
 
-
-
-
-
-
-    def link_segment(self,segment):
+    def link_segment(self,segment,osm_id):
+        road_id = "r{0}".format(osm_id)
         width = self.calculate_pipe_width(segment)
         pipe = Pipe(width, segment,self)
         r_pipe = Pipe(width, segment[::-1],self) # Other side of road
@@ -212,6 +232,21 @@ class Linker(object):
         xm = (segment[0][0] + segment[1][0])/2.0
         ym = (segment[0][1] + segment[1][1])/2.0
         p1 = to_latlon([xm,ym])
+        if segment[0] in self.int_map:
+            p2 = to_latlon(segment[0])
+            road_lines.record(0)
+            road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]])
+            i_id = "i{0}".format(self.int_map[segment[0]])
+            self.add_edge(i_id,road_id, reverse=False)
+        if segment[-1] in self.int_map:
+            p2 = to_latlon(segment[-1])
+            road_lines.record(0)
+            road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]])
+            i_id = "i{0}".format(self.int_map[segment[-1]])
+            self.add_edge(i_id,road_id, reverse=False)
+
+
+
         for b in (in_pipe + in_r_pipe):
             p2 = to_latlon(list(centroid(self.buildings[b])))
             road_lines.record(0)
@@ -232,8 +267,11 @@ class Linker(object):
         edges = zip(sorted_buildings[:-1],sorted_buildings[1:]) + zip(sorted_r_buildings[:-1],sorted_r_buildings[1:])
 
         for e1,e2 in edges:
-            self.edges["b{0}".format(e1)].append("b{0}".format(e2))
-            self.edges["b{0}".format(e2)].append("b{0}".format(e1))
+            b1 = "b{0}".format(e1)
+            b2 = "b{0}".format(e2)
+            self.add_edge(b1,b2)
+            self.add_edge(b1,road_id)
+            self.add_edge(b2,road_id)
         if sorted_r_buildings == []:
             sorted_r_buildings = [-1]
         if sorted_buildings == []:
@@ -243,8 +281,21 @@ class Linker(object):
     def write(self):
         nodes = open("graph.nodes.json","w+")
         edges = open("graph.edges.json","w+")
+        weights = open("graph.weights.json","w+")
+        change_key = lambda x: eval(x[0]) + long(x[1:])
+        for node in self.nodes:
+            old_key = node["key"]
+            node["key"] = change_key(old_key)
+        new_edges = {}
+        for k,v in self.edges.items():
+            new_edges[str(change_key(k))] = map(change_key, v)
+        new_edge_weights = {}
+        for k,v in self.edge_weights.items():
+            new_edge_weights[str(change_key(k))] = v
+        weights.write(json.dumps(new_edge_weights))
         nodes.write(json.dumps(self.nodes))
-        edges.write(json.dumps(self.edges))
+        filtered_edges = {k:list(set(v)) for k,v in new_edges.items()}
+        edges.write(json.dumps(filtered_edges))
         pipes.save("/home/vaishaal/Dropbox/pipes")
         road_lines.save("/home/vaishaal/Dropbox/road_lines")
         nodes.close()
