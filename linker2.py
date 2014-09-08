@@ -292,9 +292,19 @@ class Linker(object):
         new_edge_weights = {}
         for k,v in self.edge_weights.items():
             new_edge_weights[str(change_key(k))] = v
-        weights.write(json.dumps(new_edge_weights))
         nodes.write(json.dumps(self.nodes))
-        filtered_edges = {k:list(set(v)) for k,v in new_edges.items()}
+        zipped_edge_weights = {k: zip(v, new_edge_weights[k]) for k,v in new_edges.items()}
+        print zipped_edge_weights
+        filtered_edges_and_weights = {k:list(set(v)) for k,v in zipped_edge_weights.items()}
+        filtered_edges = {}
+        filtered_weights = {}
+        for k,v in filtered_edges_and_weights.items():
+            edge_weights = dict(v)
+            these_edges = edge_weights.keys()
+            filtered_edges[k] = list(set(these_edges))
+            filtered_weights[k] = map(lambda x: edge_weights[x], filtered_edges[k])
+
+        weights.write(json.dumps(filtered_weights))
         edges.write(json.dumps(filtered_edges))
         pipes.save("/home/vaishaal/Dropbox/pipes")
         road_lines.save("/home/vaishaal/Dropbox/road_lines")
