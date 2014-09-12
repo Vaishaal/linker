@@ -5,6 +5,7 @@ from scipy.spatial import KDTree
 import numpy as np
 import json
 import utm
+import math
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 
@@ -18,14 +19,20 @@ pipes.field('ID', 'N', '10')
 
 road_lines =  shapefile.Writer(shapefile.POLYLINE)
 road_lines.field('ID', 'N', '10')
+
+road_angles = shapefile.Writer(shapefile.POLYLINE)
+road_angles.field('ID','N','10')
+
 b = 0
 i = 2**20
 r = 2**30
+NORTH = np.array([0, 1])
 class Linker(object):
     def __init__(self, buildings_path, intersections_path, roads_path):
         build_sf = shapefile.Reader(buildings_path) # Polygons.
         int_sf = shapefile.Reader(intersections_path) # Points.
         road_sf = shapefile.Reader(roads_path) # Series of line segments.
+        self.road_sf = road_sf
         self.irecords = int_sf.records()
         self.rrecords = road_sf.records()
         self.buildings = map(
@@ -55,6 +62,11 @@ class Linker(object):
     def build_nodes(self):
         nodes = []
         keys = set()
+
+        all_roads = map(
+                    lambda road: [tuple(corner) for corner in road.points],
+                    self.road_sf.shapes()
+                    )
         for i,b in enumerate(self.buildings):
             node = {}
             attrs = {}
@@ -85,17 +97,35 @@ class Linker(object):
             fill_attr(attrs)
             node["attr"] = attrs
             nodes.append(node)
+
         for i,r in enumerate(self.roads):
             node = {}
             attrs = {}
             cx,cy = -1,-1
             node["x"] = cx
             node["y"] = cy
+            seg_vector = np.array(r[0]) - np.array(r[-1])
+            pt1 = np.array(r[0])
+            pt2 = np.array(r[-1])
+            seg_vector[0]
+            print pt1, pt2
+            if (np.linalg.norm(seg_vector) != 0):
+                angle = np.arccos(pt1.dot(pt2)/(np.linalg.norm(pt1)*np.linalg.norm(pt2)))
+                angle = math.atan2(seg_vector[1],seg_vector[0])
+                angle = ((angle * 180)/math.pi)%360
+            else:
+                angle = 0
             node["key"] = "r{0}".format(self.rrecords[i][0])
+
+            road = all_roads[i]
+            road_angles.poly(shapeType=shapefile.POLYLINE, parts=zip(road[:-1], road[1:]))
+            road_angles.record(int(angle))
+
             assert(node["key"] not in keys)
             keys.add(node["key"])
             attrs["nodeType"] = ROAD
             attrs["roadType"] = self.irecords[i][1]
+            attrs["angle"] = angle
             fill_attr(attrs)
             node["attr"] = attrs
             nodes.append(node)
@@ -294,7 +324,6 @@ class Linker(object):
             new_edge_weights[str(change_key(k))] = v
         nodes.write(json.dumps(self.nodes))
         zipped_edge_weights = {k: zip(v, new_edge_weights[k]) for k,v in new_edges.items()}
-        print zipped_edge_weights
         filtered_edges_and_weights = {k:list(set(v)) for k,v in zipped_edge_weights.items()}
         filtered_edges = {}
         filtered_weights = {}
@@ -308,6 +337,7 @@ class Linker(object):
         edges.write(json.dumps(filtered_edges))
         pipes.save("/home/vaishaal/Dropbox/pipes")
         road_lines.save("/home/vaishaal/Dropbox/road_lines")
+        road_angles.save("/home/vaishaal/Dropbox/road_angles")
         nodes.close()
         edges.close()
 
