@@ -6,6 +6,7 @@ import numpy as np
 import json
 import utm
 import math
+from math import atan2, degrees, pi
 from shapely.geometry import Point
 from shapely.geometry.polygon import Polygon
 
@@ -202,6 +203,7 @@ class Linker(object):
         '''
         dist = self.getDistance(segment[0][0], segment[0][1], segment[1][0], segment[1][1])
         return 10 + dist/10
+
     def add_edge(self, key1, key2, reverse=True, weight=1):
         self.edges[key1].append(key2)
         self.edge_weights[key1].append(weight)
@@ -211,6 +213,19 @@ class Linker(object):
 
     def getDistance(self, x1, y1, x2, y2):
         return math.sqrt((x2-x1)**2 + (y2-y1)**2)
+
+    def findMinDistanceBuilding(self, source, sourceX, sourceY, buildings):
+        minDist = 9999999.9
+        target = source
+        for building in buildings:
+            bld = self.nodes[building]
+            if bld['x'] == sourceX and bld['y'] == sourceY:
+                continue
+            dist = self.getDistance(sourceX, sourceY, bld['x'], bld['y']) 
+            if dist < minDist:
+                minDist = dist
+                target = building
+        return target
 
     def link(self):
         for osm_id,road in self.segment_map.items():
@@ -223,39 +238,21 @@ class Linker(object):
                 buildings1 = segment_link_map[segment1]
                 buildings2 = segment_link_map[segment2]
 
-                b1_id = "b{0}".format(buildings1[0][-1])
-                b1r_id = "b{0}".format(buildings1[1][-1])
-
-                b1 = self.nodes[buildings1[0][-1]]
-                b1r = self.nodes[buildings1[1][-1]]
-
-                minDist1 = 9999999.9
-                nearestBuilding = buildings2[0][0]
-                for buildingID in buildings2[0]:
-                    if buildingID == -1:
-                        continue
-                    building = self.nodes[buildingID]
-                    dist = self.getDistance(b1['x'],b1['y'],building['x'],building['y'])
-                    if dist < minDist1:
-                        minDist1 = dist
-                        nearestBuilding = buildingID
-
-                minDist2 = 9999999.9
-                nearestBuildingR = buildings2[1][0]
-                for buildingID in buildings2[1]:
-                    if buildingID == -1:
-                        continue
-                    building = self.nodes[buildingID]
-                    dist = self.getDistance(b1r['x'],b1r['y'],building['x'],building['y'])
-                    if dist < minDist2:
-                        minDist2 = dist
-                        nearestBuildingR = buildingID
-
-                b2_id = "b{0}".format(nearestBuilding)
-                b2r_id = "b{0}".format(nearestBuildingR)
-
                 if segment1[1] in self.int_map:
                     i_id = "i{0}".format(self.int_map[segment1[1]])
+
+                    minDistBuilding = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[0])
+                    b1_id = "b{0}".format(minDistBuilding)
+
+                    minDistBuildingR = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[1])
+                    b1r_id = "b{0}".format(minDistBuildingR)
+
+                    minDistBuilding = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[0])
+                    b2_id = "b{0}".format(minDistBuilding)
+
+                    minDistBuildingR = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[1])
+                    b2r_id = "b{0}".format(minDistBuildingR)
+
                     self.add_edge(b1_id,i_id)
                     self.add_edge(b2_id,i_id)
                     self.add_edge(b1r_id,i_id)
@@ -263,9 +260,36 @@ class Linker(object):
                     self.add_edge(b1_id,b2_id, weight=0.5)
                     self.add_edge(b1r_id,b2r_id, weight=0.5)
                 else:
+
+                    minDist = 99999999.9
+                    bldPair = (buildings1[0][0],buildings2[0][-1])
+                    for building in buildings1[0]:
+                        bld = self.nodes[building]
+                        minDistBuilding = self.findMinDistanceBuilding(building,bld['x'],bld['y'],buildings2[0])
+                        minBld = self.nodes[minDistBuilding]
+                        dist = self.getDistance(bld['x'],bld['y'],minBld['x'],minBld['y'])
+                        if dist < minDist:
+                            minDist = dist
+                            bldPair = (building,minDistBuilding)
+                    b1_id = "b{0}".format(bldPair[0])
+                    b2_id = "b{0}".format(bldPair[1])
+
+                    minDist = 99999999.9
+                    bldPair = (buildings1[1][0],buildings2[1][-1])
+                    for building in buildings1[1]:
+                        bld = self.nodes[building]
+                        minDistBuilding = self.findMinDistanceBuilding(building,bld['x'],bld['y'],buildings2[1])
+                        minBld = self.nodes[minDistBuilding]
+                        dist = self.getDistance(bld['x'],bld['y'],minBld['x'],minBld['y'])
+                        if dist < minDist:
+                            minDist = dist
+                            bldPair = (building,minDistBuilding)
+                    b1r_id = "b{0}".format(bldPair[0])
+                    b2r_id = "b{0}".format(bldPair[1])
+
                     self.add_edge(b1_id,b2_id)
                     self.add_edge(b1r_id,b2r_id)
-                    pass
+
             start = road[0]
             end = road[-1]
 
@@ -276,26 +300,11 @@ class Linker(object):
             if start[0] in self.int_map:
                 i_id = "i{0}".format(self.int_map[start[0]])
 
-                b1First = self.nodes[buildings1[0][0]]
-                b1Last = self.nodes[buildings1[0][-1]]
-                b1RFirst = self.nodes[buildings1[1][0]]
-                b1RLast = self.nodes[buildings1[1][-1]]
+                minDistBuilding = self.findMinDistanceBuilding(self.int_map[start[0]],start[0][0],start[0][1],buildings1[0])
+                b1_id = "b{0}".format(minDistBuilding)
 
-                distFirst = self.getDistance(start[0][0],start[0][1],b1First['x'],b1First['y'])
-                distLast = self.getDistance(start[0][0],start[0][1],b1Last['x'],b1Last['y'])
-
-                if distFirst < distLast:
-                    b1_id = "b{0}".format(buildings1[0][0])
-                else:
-                    b1_id = "b{0}".format(buildings1[0][-1])
-
-                distFirstR = self.getDistance(start[0][0],start[0][1],b1RFirst['x'],b1RFirst['y'])
-                distLastR = self.getDistance(start[0][0],start[0][1],b1RLast['x'],b1RLast['y'])
-
-                if distFirstR < distLastR:
-                    b1r_id = "b{0}".format(buildings1[1][0])
-                else:
-                    b1r_id = "b{0}".format(buildings1[1][-1])
+                minDistBuildingR = self.findMinDistanceBuilding(self.int_map[start[0]],start[0][0],start[0][1],buildings1[1])
+                b1r_id = "b{0}".format(minDistBuildingR)
 
                 self.add_edge(b1_id,i_id)
                 self.add_edge(b1r_id,i_id)
@@ -303,27 +312,12 @@ class Linker(object):
             if end[1] in self.int_map:
                 i_id = "i{0}".format(self.int_map[end[1]])
 
-                b2First = self.nodes[buildings2[0][0]]
-                b2Last = self.nodes[buildings2[0][-1]]
-                b2RFirst = self.nodes[buildings2[1][0]]
-                b2RLast = self.nodes[buildings2[1][-1]]
+                minDistBuilding = self.findMinDistanceBuilding(self.int_map[end[1]],end[1][0],end[1][1],buildings2[0])
+                b2_id = "b{0}".format(minDistBuilding)
 
-                distFirst = self.getDistance(end[1][0],end[1][1],b2First['x'],b2First['y'])
-                distLast = self.getDistance(end[1][0],end[1][1],b2Last['x'],b2Last['y'])
-
-                if distFirst <= distLast:
-                    b2_id = "b{0}".format(buildings2[0][0])
-                else:
-                    b2_id = "b{0}".format(buildings2[0][-1])
-
-                distFirstR = self.getDistance(end[1][0],end[1][1],b2RFirst['x'],b2RFirst['y'])
-                distLastR = self.getDistance(end[1][0],end[1][1],b2RLast['x'],b2RLast['y']) 
-
-                if distFirstR < distLastR:
-                    b2r_id = "b{0}".format(buildings2[1][0])
-                else:
-                    b2r_id = "b{0}".format(buildings2[1][-1]) 
-
+                minDistBuildingR = self.findMinDistanceBuilding(self.int_map[end[1]],end[1][0],end[1][1],buildings2[1])
+                b2r_id = "b{0}".format(minDistBuildingR)
+                
                 self.add_edge(b2_id,i_id)
                 self.add_edge(b2r_id,i_id)
 
@@ -351,8 +345,6 @@ class Linker(object):
             i_id = "i{0}".format(self.int_map[segment[-1]])
             self.add_edge(i_id,road_id, reverse=False)
 
-
-
         for b in (in_pipe + in_r_pipe):
             p2 = to_latlon(list(centroid(self.buildings[b])))
             road_lines.record(0)
@@ -374,12 +366,65 @@ class Linker(object):
 
         edges = zip(sorted_buildings[:-1],sorted_buildings[1:]) + zip(sorted_r_buildings[:-1],sorted_r_buildings[1:])
 
-        for e1,e2 in edges:
-            b1 = "b{0}".format(e1)
-            b2 = "b{0}".format(e2)
-            self.add_edge(b1,b2)
-            self.add_edge(b1,road_id)
-            self.add_edge(b2,road_id)
+        def getAngle(x1,y1,x2,y2):
+            dx = x2 - x1
+            dy = y2 - y1
+            rads = atan2(-dy,dx)
+            rads %= 2*pi
+            degs = degrees(rads)
+            return degs
+
+        for building in in_pipe:
+            #check for buildings in both pipes and keep it in the pipe with more intersection area
+            if building in in_r_pipe:
+                building_poly = Polygon(self.buildings[building])
+                intersection_area = pipe.polygon.intersection(building_poly).area
+                intersection_area_other = r_pipe.polygon.intersection(building_poly).area
+                if intersection_area >= intersection_area_other:
+                    in_r_pipe.remove(building)
+                    #sorted_r_buildings.remove(building)
+                    sorted_r_buildings = [x for x in sorted_r_buildings if x != building]
+                else:
+                    in_pipe.remove(building)
+                    #sorted_buildings.remove(building)
+                    sorted_buildings = [x for x in sorted_buildings if x != building]
+                    continue
+
+            bld1 = self.nodes[building]
+            b1 = "b{0}".format(building)
+            b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_pipe)
+            b2Bld = self.nodes[b2]
+            b2Angle = getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
+            b2ID = "b{0}".format(b2)
+            self.add_edge(b1,b2ID)
+
+            new_pipe = [x for x in in_pipe if x != b2]
+            b2Next = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],new_pipe)
+            b2NextBld = self.nodes[b2Next]
+            b2NextAngle = getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
+            b2NextID = "b{0}".format(b2Next)
+            
+            if abs(b2Angle - b2NextAngle) > 135 and abs(b2Angle - b2NextAngle) < 225:
+                self.add_edge(b1,b2NextID)
+
+        for building in in_r_pipe:
+            bld1 = self.nodes[building]
+            b1 = "b{0}".format(building)
+            b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_r_pipe)
+            b2Bld = self.nodes[b2]
+            b2Angle = getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
+            b2ID = "b{0}".format(b2)
+            self.add_edge(b1,b2ID)
+
+            new_pipe = [x for x in in_r_pipe if x != b2]
+            b2Next = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],new_pipe)
+            b2NextBld = self.nodes[b2Next]
+            b2NextAngle = getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
+            b2NextID = "b{0}".format(b2Next)
+
+            if abs(b2Angle - b2NextAngle) > 135 and abs(b2Angle - b2NextAngle) < 225:
+                self.add_edge(b1,b2NextID)
+
         if sorted_r_buildings == []:
             sorted_r_buildings = [-1]
         if sorted_buildings == []:
