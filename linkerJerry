@@ -8,7 +8,7 @@ import utm
 import math
 from math import atan2, degrees, pi
 from shapely.geometry import Point
-from shapely.geometry.polygon import Polygon
+from shapely.geometry.polygon import Polygon, LineString
 
 
 BUILDING = 0
@@ -55,8 +55,16 @@ class Linker(object):
         self.segment_lookup = self.organize_road() # Find segments from points
         self.building_lookup = self.organize_buildings() # Find buildings from segments
         self.nodes = self.build_nodes()
+
+        self.buildingCenters = self.buildBuildingCenters() #NEW
+        self.buildingKDTree = self.buildKDTreeBuildings() #NEW
+        self.roadToBuildings = self.categorizeBuildings() #NEW
+
         self.node_map = {n["key"]:n for n in self.nodes}
         self.edges = defaultdict(list)
+
+        self.pipeEdges = defaultdict(list) #NEW
+
         self.edge_weights = defaultdict(list)
         self.int_map = dict([i[::-1] for i in enumerate(self.intersections)])
 
@@ -148,10 +156,17 @@ class Linker(object):
         mp_array = np.array(segment_pts_map.keys())
         tree = KDTree(mp_array)
         def lookup(pt, k=5):
-            points = tree.query(pt,k)
             ret = []
-            for pt in mp_array[points[1]]:
-                ret += segment_pts_map[tuple(pt)]
+            retSet = []
+            ret2 = []
+            i = k
+            while len(ret) < k:
+                points = tree.query(pt,i)
+                for pt in mp_array[points[1]]:
+                    if segment_pts_map[tuple(pt)] not in retSet:
+                        ret+=(segment_pts_map[tuple(pt)])
+                        retSet.append(segment_pts_map[tuple(pt)])
+                i += 1
             return ret
         return lookup
 
@@ -168,6 +183,98 @@ class Linker(object):
         def lookup(segment):
             return segment_build_map[segment]
         return lookup
+
+    def perpIntersectPoint(self, point, line_start, line_end):
+        ''' Calc minimum distance from a point and a line segment and intersection'''
+        # sqrDist of the line (PyQGIS function = magnitude (length) of a line **2)
+        sx = line_start[0]
+        sy = line_start[1]
+        ex = line_end[0]
+        ey = line_end[1]
+        magnitude2 = (ex-sx)**2 + (ey-sy)**2
+        # minimum distance
+        u = ((point[0] - line_start[0]) * (line_end[0] - line_start[0]) + (point[1] - line_start[1]) * (line_end[1] - line_start[1]))/(magnitude2)
+        # intersection point on the line
+        ix = line_start[0] + u * (line_end[0] - line_start[0])
+        iy = line_start[1]+ u * (line_end[1] - line_start[1])
+        
+        def distance(a,b):
+            return math.sqrt((a[0] - b[0])**2 + (a[1] - b[1])**2)
+
+        def is_between(a,b,c):
+            return -0.00001 < (distance(a, c) + distance(c, b) - distance(a, b)) < 0.00001
+
+        pt = (ix,iy)
+        if is_between(line_start,line_end,pt):
+            return pt
+        else:
+            return None
+
+    def buildBuildingCenters(self):
+        nodes = {}
+        keys = set()
+        for i,b in enumerate(self.buildings):
+            node = {}
+            attrs = {}
+            cx,cy = centroid(b)
+            key = cx,cy
+            value = [i, b]
+            nodes[key] = value
+        return nodes
+
+    def buildKDTreeBuildings(self):
+        return KDTree(self.buildingCenters.keys())
+
+    def categorizeBuildings(self):
+        def isLeft(a,b,c):
+            return ((b[0] - a[0])*(c[1] - a[1]) - (b[1] - a[1])*(c[0] - a[0])) > 0;
+
+        Rd2BldLeft = {}
+        Rd2BldRight = {}
+        for bld in self.buildingCenters.keys():
+            bldID = self.buildingCenters[bld][0]
+            roads = self.segment_lookup([bld[0],bld[1]])
+            p1 = (bld[0], bld[1])
+            p1LatLon = to_latlon(p1)
+            res = self.buildingKDTree.query([bld[0],bld[1]], 10)
+            neighbors = []
+            for item in res[1][1:]: #start from index 1 because index 0 is always the original building bld
+                buildingID = self.buildingCenters[self.buildingCenters.keys()[item]][0]
+                neighbors.append(self.buildings[buildingID])
+            roadDict = {}
+            for rd in roads:
+                roadLine = LineString([rd[0],rd[1]])
+                p3 = self.perpIntersectPoint(p1,rd[0],rd[1])
+                if p3:
+                    perpLine = LineString([p1,p3])
+                    intersectsSomething = False
+                    for neighbor in neighbors:
+                        bldPoly = Polygon(neighbor)
+                        if perpLine.intersects(bldPoly):
+                            intersectsSomething = True
+                            break
+                    for rd2 in roads:
+                        if rd2 == rd:
+                            continue
+                        roadLine2 = LineString([rd2[0],rd2[1]])
+                        if perpLine.intersects(roadLine2):
+                            intersectsSomething = True
+                            break
+                    if not intersectsSomething:
+                        p3LatLon = to_latlon(p3)
+                        road_lines.record(0)
+                        road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p3LatLon,p1LatLon]])
+                        if isLeft(rd[0],rd[1],p1):
+                            if rd not in Rd2BldLeft:
+                                Rd2BldLeft[rd] = [bldID]
+                            else:
+                                Rd2BldLeft[rd].append(bldID)  
+                        else:
+                            if rd not in Rd2BldRight:
+                                Rd2BldRight[rd] = [bldID]
+                            else:
+                                Rd2BldRight[rd].append(bldID)
+        return (Rd2BldLeft, Rd2BldRight)              
 
     def grab_blocks(self):
         ''' Generate blocks from intersections and roads 
@@ -211,8 +318,17 @@ class Linker(object):
             self.edges[key2].append(key1)
             self.edge_weights[key2].append(weight)
 
+    def getAngle(self, x1, y1, x2, y2):
+            dx = x2 - x1
+            dy = y2 - y1
+            rads = atan2(-dy,dx)
+            rads %= 2*pi
+            degs = degrees(rads)
+            return degs
+
     def getDistance(self, x1, y1, x2, y2):
         return math.sqrt((x2-x1)**2 + (y2-y1)**2)
+
 
     def findMinDistanceBuilding(self, source, sourceX, sourceY, buildings):
         minDist = 9999999.9
@@ -334,21 +450,21 @@ class Linker(object):
         p1 = to_latlon([xm,ym])
         if segment[0] in self.int_map:
             p2 = to_latlon(segment[0])
-            road_lines.record(0)
-            road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]])
+            #road_lines.record(0)
+            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #intersection to middle of segment
             i_id = "i{0}".format(self.int_map[segment[0]])
-            self.add_edge(i_id,road_id, reverse=False)
+            self.add_edge(i_id,road_id, reverse=False) 
         if segment[-1] in self.int_map:
             p2 = to_latlon(segment[-1])
-            road_lines.record(0)
-            road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]])
+            #road_lines.record(0)
+            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #intersection to middle of segment
             i_id = "i{0}".format(self.int_map[segment[-1]])
-            self.add_edge(i_id,road_id, reverse=False)
+            self.add_edge(i_id,road_id, reverse=False) 
 
         for b in (in_pipe + in_r_pipe):
             p2 = to_latlon(list(centroid(self.buildings[b])))
-            road_lines.record(0)
-            road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]])
+            #road_lines.record(0)
+            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #building to middle of segment1
         pt1 = np.array(segment[0])
         pt2 = np.array(segment[1])
         cos = pt1.dot(pt2)/(np.linalg.norm(pt1)*np.linalg.norm(pt2))
@@ -366,13 +482,14 @@ class Linker(object):
 
         edges = zip(sorted_buildings[:-1],sorted_buildings[1:]) + zip(sorted_r_buildings[:-1],sorted_r_buildings[1:])
 
-        def getAngle(x1,y1,x2,y2):
-            dx = x2 - x1
-            dy = y2 - y1
-            rads = atan2(-dy,dx)
-            rads %= 2*pi
-            degs = degrees(rads)
-            return degs
+        left_pipe = []
+        right_pipe = []
+        if segment in self.roadToBuildings[0]:
+            left_pipe = self.roadToBuildings[0][segment]
+        if segment in self.roadToBuildings[1]:
+            right_pipe = self.roadToBuildings[1][segment]
+        in_pipe = left_pipe
+        in_r_pipe = right_pipe
 
         for building in in_pipe:
             #check for buildings in both pipes and keep it in the pipe with more intersection area
@@ -394,14 +511,14 @@ class Linker(object):
             b1 = "b{0}".format(building)
             b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_pipe)
             b2Bld = self.nodes[b2]
-            b2Angle = getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
+            b2Angle = self.getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
             b2ID = "b{0}".format(b2)
             self.add_edge(b1,b2ID)
 
             new_pipe = [x for x in in_pipe if x != b2]
             b2Next = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],new_pipe)
             b2NextBld = self.nodes[b2Next]
-            b2NextAngle = getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
+            b2NextAngle = self.getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
             b2NextID = "b{0}".format(b2Next)
             
             if abs(b2Angle - b2NextAngle) > 135 and abs(b2Angle - b2NextAngle) < 225:
@@ -412,19 +529,21 @@ class Linker(object):
             b1 = "b{0}".format(building)
             b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_r_pipe)
             b2Bld = self.nodes[b2]
-            b2Angle = getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
+            b2Angle = self.getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
             b2ID = "b{0}".format(b2)
             self.add_edge(b1,b2ID)
 
             new_pipe = [x for x in in_r_pipe if x != b2]
             b2Next = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],new_pipe)
             b2NextBld = self.nodes[b2Next]
-            b2NextAngle = getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
+            b2NextAngle = self.getAngle(bld1['x'],bld1['y'],b2NextBld['x'],b2NextBld['y'])
             b2NextID = "b{0}".format(b2Next)
 
             if abs(b2Angle - b2NextAngle) > 135 and abs(b2Angle - b2NextAngle) < 225:
                 self.add_edge(b1,b2NextID)
 
+        sorted_buildings = in_pipe
+        sorted_r_buildings = in_r_pipe
         if sorted_r_buildings == []:
             sorted_r_buildings = [-1]
         if sorted_buildings == []:
