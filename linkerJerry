@@ -407,6 +407,7 @@ class Linker(object):
 
     def link(self):
         for osm_id,road in self.segment_map.items():
+            road_id = "r{0}".format(osm_id)
             segment_link_map = {}
             for segment in road:
                 segment_links = self.link_segment(segment,osm_id)
@@ -419,6 +420,7 @@ class Linker(object):
                 if segment1[1] in self.int_map:
                     i_id = "i{0}".format(self.int_map[segment1[1]])
 
+                    self.add_edge(i_id,road_id, reverse=False)
                     minDistBuilding1 = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[0])
                     b1_id = "b{0}".format(minDistBuilding1)
 
@@ -528,7 +530,7 @@ class Linker(object):
                 self.add_edge(b2_id,b2r_id, weight=0.5)
 
     def link_segment(self,segment,osm_id):
-
+        road_id = "r{0}".format(osm_id)
         left_pipe = []
         right_pipe = []
         if segment in self.roadToBuildings[0]:
@@ -556,10 +558,12 @@ class Linker(object):
 
             bld1 = self.nodes[building]
             b1 = "b{0}".format(building)
+            self.add_edge(b1,road_id, reverse=False)
             b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_pipe)
             b2Bld = self.nodes[b2]
             b2Angle = self.getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
             b2ID = "b{0}".format(b2)
+            self.add_edge(b2ID,road_id, reverse=False)
             self.add_edge(b1,b2ID)
 
             new_pipe = [x for x in in_pipe if x != b2]
@@ -574,10 +578,12 @@ class Linker(object):
         for building in in_r_pipe:
             bld1 = self.nodes[building]
             b1 = "b{0}".format(building)
+            self.add_edge(b1,road_id, reverse=False)
             b2 = self.findMinDistanceBuilding(building,bld1['x'],bld1['y'],in_r_pipe)
             b2Bld = self.nodes[b2]
             b2Angle = self.getAngle(bld1['x'],bld1['y'],b2Bld['x'],b2Bld['y'])
             b2ID = "b{0}".format(b2)
+            self.add_edge(b2ID,road_id, reverse=False)
             self.add_edge(b1,b2ID)
 
             new_pipe = [x for x in in_r_pipe if x != b2]
