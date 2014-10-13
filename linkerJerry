@@ -155,7 +155,7 @@ class Linker(object):
                 segment_pts_map[tuple(pt)].append(seg)
         mp_array = np.array(segment_pts_map.keys())
         tree = KDTree(mp_array)
-        def lookup(pt, k=5):
+        def lookup(pt, k=3):
             ret = []
             retSet = []
             ret2 = []
@@ -229,51 +229,113 @@ class Linker(object):
         def isLeft(a,b,c):
             return ((b[0] - a[0])*(c[1] - a[1]) - (b[1] - a[1])*(c[0] - a[0])) > 0;
 
+        def getIntersectionArea(bldPoly,line,perpLine,bldID):
+            if not line.intersects(bldPoly):
+                return 0.0
+            pt1 = list(line.coords)[0]
+            pt2 = list(line.coords)[1]
+            perppt1 = list(perpLine.coords)[0]
+            perppt2 = list(perpLine.coords)[1]
+            dx = perppt2[0] - perppt1[0]
+            dy = perppt2[1] - perppt1[1] 
+            pt3 = (pt1[0]-dx,pt1[1]-dy)
+            pt4 = (pt2[0]-dx,pt2[1]-dy)
+            linePoly = Polygon([pt1,pt3,pt4,pt2])
+            
+            try:
+                intersection_area = linePoly.intersection(bldPoly).area
+                return intersection_area/bldPoly.area
+            except:
+                return -1
+
+        def overlapsNeighbor(bldPoly,neighborPoly):
+            try:
+                intersection_area = bldPoly.intersection(neighborPoly).area
+                return intersection_area/bldPoly.area > 0.05
+            except:
+                return False
+
         Rd2BldLeft = {}
         Rd2BldRight = {}
         for bld in self.buildingCenters.keys():
             bldID = self.buildingCenters[bld][0]
-            roads = self.segment_lookup([bld[0],bld[1]])
+
+            roads = self.segment_lookup([bld[0],bld[1]],10)
             p1 = (bld[0], bld[1])
             p1LatLon = to_latlon(p1)
-            res = self.buildingKDTree.query([bld[0],bld[1]], 10)
+            res = self.buildingKDTree.query([bld[0],bld[1]], 20)
             neighbors = []
             for item in res[1][1:]: #start from index 1 because index 0 is always the original building bld
                 buildingID = self.buildingCenters[self.buildingCenters.keys()[item]][0]
                 neighbors.append(self.buildings[buildingID])
             roadDict = {}
-            for rd in roads:
-                roadLine = LineString([rd[0],rd[1]])
-                p3 = self.perpIntersectPoint(p1,rd[0],rd[1])
-                if p3:
-                    perpLine = LineString([p1,p3])
-                    intersectsSomething = False
-                    for neighbor in neighbors:
-                        bldPoly = Polygon(neighbor)
-                        if perpLine.intersects(bldPoly):
-                            intersectsSomething = True
-                            break
-                    for rd2 in roads:
-                        if rd2 == rd:
-                            continue
-                        roadLine2 = LineString([rd2[0],rd2[1]])
-                        if perpLine.intersects(roadLine2):
-                            intersectsSomething = True
-                            break
-                    if not intersectsSomething:
+
+            bldVertices = self.buildingCenters[bld][1]
+            bldPolygon = Polygon(bldVertices)
+
+            for rd in roads: 
+                rdLine = LineString([rd[0],rd[1]])   
+                intersectsSomething = False
+                p3Intersect = self.perpIntersectPoint(p1,rd[0],rd[1])
+                if not p3Intersect:
+                    continue
+
+                bldVertices.append(p1)
+                for vertex in bldVertices:
+                    if intersectsSomething:
+                        break
+                    p3 = self.perpIntersectPoint(vertex,rd[0],rd[1])
+                    vertexLatLon = to_latlon(vertex)
+
+                    if p3:
                         p3LatLon = to_latlon(p3)
-                        road_lines.record(0)
-                        road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p3LatLon,p1LatLon]])
-                        if isLeft(rd[0],rd[1],p1):
-                            if rd not in Rd2BldLeft:
-                                Rd2BldLeft[rd] = [bldID]
-                            else:
-                                Rd2BldLeft[rd].append(bldID)  
+                        perpLine = LineString([p1,p3])
+
+                        for neighbor in neighbors:
+                            neighborPoly = Polygon(neighbor)
+                            if overlapsNeighbor(bldPolygon,neighborPoly):
+                                continue
+                            if perpLine.intersects(neighborPoly):
+                                intersectRd = False
+                                intersectionRdArea = 0
+                                if neighborPoly.intersects(rdLine):
+                                    intersectRd = True
+                                    intersectionRdArea = getIntersectionArea(neighborPoly,rdLine,perpLine,bldID)
+                                if intersectionRdArea > 0.4 or not intersectRd:
+                                    #if bldID == 4287 or bldID == 4288:
+                                        #print intersectionRdArea
+                                    #road_lines.record(0)
+                                    #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[vertexLatLon,p3LatLon]])
+                                    intersectsSomething = True
+                                    break
+                        for rd2 in roads:
+                            if rd2 == rd:
+                                continue
+                            roadLine2 = LineString([rd2[0],rd2[1]])
+                            if perpLine.intersects(roadLine2):
+                                intersectsSomething = True
+                                break
+            
+                if not intersectsSomething:
+                    perpLine = LineString([p1,p3Intersect])
+                    if perpLine.length > (3*bldPolygon.length)/4:
+                        continue
+                    #if rdLine.length < (bldPolygon.length/3):
+                    #        continue
+                    p3IntersectLatLon = to_latlon(p3Intersect)
+                    road_lines.record(0)
+                    road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p3IntersectLatLon,p1LatLon]])
+                    if isLeft(rd[0],rd[1],p1):
+                        if rd not in Rd2BldLeft:
+                            Rd2BldLeft[rd] = [bldID]
                         else:
-                            if rd not in Rd2BldRight:
-                                Rd2BldRight[rd] = [bldID]
-                            else:
-                                Rd2BldRight[rd].append(bldID)
+                            Rd2BldLeft[rd].append(bldID)  
+                    else:
+                        if rd not in Rd2BldRight:
+                            Rd2BldRight[rd] = [bldID]
+                        else:
+                            Rd2BldRight[rd].append(bldID)
+
         return (Rd2BldLeft, Rd2BldRight)              
 
     def grab_blocks(self):
@@ -357,24 +419,50 @@ class Linker(object):
                 if segment1[1] in self.int_map:
                     i_id = "i{0}".format(self.int_map[segment1[1]])
 
-                    minDistBuilding = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[0])
-                    b1_id = "b{0}".format(minDistBuilding)
+                    minDistBuilding1 = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[0])
+                    b1_id = "b{0}".format(minDistBuilding1)
 
-                    minDistBuildingR = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[1])
-                    b1r_id = "b{0}".format(minDistBuildingR)
+                    minDistBuilding1R = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings1[1])
+                    b1r_id = "b{0}".format(minDistBuilding1R)
 
-                    minDistBuilding = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[0])
-                    b2_id = "b{0}".format(minDistBuilding)
+                    minDistBuilding2 = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[0])
+                    b2_id = "b{0}".format(minDistBuilding2)
 
-                    minDistBuildingR = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[1])
-                    b2r_id = "b{0}".format(minDistBuildingR)
+                    minDistBuilding2R = self.findMinDistanceBuilding(self.int_map[segment1[1]],segment1[1][0],segment1[1][1],buildings2[1])
+                    b2r_id = "b{0}".format(minDistBuilding2R)
 
-                    self.add_edge(b1_id,i_id)
-                    self.add_edge(b2_id,i_id)
-                    self.add_edge(b1r_id,i_id)
-                    self.add_edge(b2r_id,i_id)
+                    #self.add_edge(b1_id,i_id)
+                    #self.add_edge(b2_id,i_id)
+                    #self.add_edge(b1r_id,i_id)
+                    #self.add_edge(b2r_id,i_id)
                     self.add_edge(b1_id,b2_id, weight=0.5)
                     self.add_edge(b1r_id,b2r_id, weight=0.5)
+
+                    nb = self.nodes[minDistBuilding1]
+                    cp = (nb['x'],nb['y'])
+                    #cpLatlon = to_latlon(cp)
+                    nbR = self.nodes[minDistBuilding1R]
+                    cpR = (nbR['x'],nbR['y'])
+                    #cpRLatlon = to_latlon(cpR)
+                    nb2 = self.nodes[minDistBuilding2]
+                    cp2 = (nb2['x'],nb2['y'])
+                    #cp2Latlon = to_latlon(cp2)
+                    nb2R = self.nodes[minDistBuilding2R]
+                    cp2R = (nb2R['x'],nb2R['y'])
+                    #cp2RLatlon = to_latlon(cp2R)
+                    edgeLine = LineString([cp, cp2])
+                    edgeLine2 = LineString([cpR, cp2R])
+
+                    roads = self.segment_lookup([cp[0],cp[1]],5)
+                    for rd in roads:
+                        rdLine = LineString([rd[0],rd[1]])   
+                        if edgeLine.intersects(rdLine):
+                            self.add_edge(b1_id,i_id)
+                            self.add_edge(b2_id,i_id)
+                        if edgeLine2.intersects(rdLine):
+                            self.add_edge(b1r_id,i_id)
+                            self.add_edge(b2r_id,i_id)
+
                 else:
 
                     minDist = 99999999.9
@@ -424,6 +512,7 @@ class Linker(object):
 
                 self.add_edge(b1_id,i_id)
                 self.add_edge(b1r_id,i_id)
+                self.add_edge(b1_id,b1r_id, weight=0.5)
 
             if end[1] in self.int_map:
                 i_id = "i{0}".format(self.int_map[end[1]])
@@ -436,51 +525,9 @@ class Linker(object):
                 
                 self.add_edge(b2_id,i_id)
                 self.add_edge(b2r_id,i_id)
+                self.add_edge(b2_id,b2r_id, weight=0.5)
 
     def link_segment(self,segment,osm_id):
-        road_id = "r{0}".format(osm_id)
-        width = self.calculate_pipe_width(segment)
-        pipe = Pipe(width, segment,self)
-        r_pipe = Pipe(width, segment[::-1],self) # Other side of road
-        nearby_buildings = self.building_lookup(segment)
-        in_pipe = filter(lambda x: self.buildings[x] in pipe, nearby_buildings)
-        in_r_pipe = filter(lambda x: self.buildings[x] in r_pipe, nearby_buildings)
-        xm = (segment[0][0] + segment[1][0])/2.0
-        ym = (segment[0][1] + segment[1][1])/2.0
-        p1 = to_latlon([xm,ym])
-        if segment[0] in self.int_map:
-            p2 = to_latlon(segment[0])
-            #road_lines.record(0)
-            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #intersection to middle of segment
-            i_id = "i{0}".format(self.int_map[segment[0]])
-            self.add_edge(i_id,road_id, reverse=False) 
-        if segment[-1] in self.int_map:
-            p2 = to_latlon(segment[-1])
-            #road_lines.record(0)
-            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #intersection to middle of segment
-            i_id = "i{0}".format(self.int_map[segment[-1]])
-            self.add_edge(i_id,road_id, reverse=False) 
-
-        for b in (in_pipe + in_r_pipe):
-            p2 = to_latlon(list(centroid(self.buildings[b])))
-            #road_lines.record(0)
-            #road_lines.poly(shapeType=shapefile.POLYLINE, parts=[[p1,p2]]) #building to middle of segment1
-        pt1 = np.array(segment[0])
-        pt2 = np.array(segment[1])
-        cos = pt1.dot(pt2)/(np.linalg.norm(pt1)*np.linalg.norm(pt2))
-        if cos > 1.0:
-            cos = 1.0
-        seg_angle = np.arccos(cos)
-        centroids = np.array(map(lambda x: centroid(self.buildings[x]), in_pipe))
-        centroid_projections = map(lambda x: np.linalg.norm(x)*np.cos(seg_angle),
-                                   centroids)
-        sorted_buildings = map(lambda x: x[1], sorted(enumerate(in_pipe), key=lambda x: centroid_projections[x[0]]))
-        centroids_r = np.array(map(lambda x: centroid(self.buildings[x]), in_r_pipe))
-        centroid_r_projections = map(lambda x: np.linalg.norm(x)*np.cos(seg_angle),
-                                   centroids_r)
-        sorted_r_buildings = map(lambda x: x[1], sorted(enumerate(in_r_pipe), key=lambda x: centroid_r_projections[x[0]]))
-
-        edges = zip(sorted_buildings[:-1],sorted_buildings[1:]) + zip(sorted_r_buildings[:-1],sorted_r_buildings[1:])
 
         left_pipe = []
         right_pipe = []
@@ -559,6 +606,10 @@ class Linker(object):
             old_key = node["key"]
             node["key"] = change_key(old_key)
         new_edges = {}
+        print "EDGES: ", len(self.edges)
+        print "NODES: ", len(self.nodes)
+        print "BUILDINGS: ", len(self.buildings)
+        print "INTERSECTIONS: ", len(self.intersections)
         for k,v in self.edges.items():
             new_edges[str(change_key(k))] = map(change_key, v)
         new_edge_weights = {}
@@ -577,9 +628,9 @@ class Linker(object):
 
         weights.write(json.dumps(filtered_weights))
         edges.write(json.dumps(filtered_edges))
-        pipes.save("Finderpipes")
+        #pipes.save("Finderpipes")
         road_lines.save("Finderroad_lines")
-        road_angles.save("Finderroad_angles")
+        #road_angles.save("Finderroad_angles")
         nodes.close()
         edges.close()
 
