@@ -260,6 +260,10 @@ class Linker(object):
         for bld in self.buildingCenters.keys():
             bldID = self.buildingCenters[bld][0]
 
+            #if bldID < 3700 or bldID > 3800:
+            #if bldID != 3751:
+                #continue
+
             roads = self.segment_lookup([bld[0],bld[1]],10)
             p1 = (bld[0], bld[1])
             p1LatLon = to_latlon(p1)
@@ -267,7 +271,14 @@ class Linker(object):
             neighbors = []
             for item in res[1][1:]: #start from index 1 because index 0 is always the original building bld
                 buildingID = self.buildingCenters[self.buildingCenters.keys()[item]][0]
-                neighbors.append(self.buildings[buildingID])
+                neighbor = self.buildings[buildingID]
+                #this part removes a bug that some neighbor shapes have extra information, which will result in Polygon error later on.
+                start = neighbor[0]
+                for i in range(1,len(neighbor)):
+                    if neighbor[i] == start and i > 2:
+                        break
+                neighbor = neighbor[:i+1]
+                neighbors.append(neighbor)
             roadDict = {}
 
             bldVertices = self.buildingCenters[bld][1]
